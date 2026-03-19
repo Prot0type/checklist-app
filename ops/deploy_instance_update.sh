@@ -10,6 +10,7 @@ RUN_SMOKE_TEST="${RUN_SMOKE_TEST:-1}"
 INSTALL_SERVICE="${INSTALL_SERVICE:-1}"
 ENABLE_MONITOR_SERVICE="${ENABLE_MONITOR_SERVICE:-0}"
 ENV_FILE="${ENV_FILE:-/etc/checklist-app/checklist-app.env}"
+export HOME="${HOME:-/root}"
 
 if ! id "${APP_USER}" >/dev/null 2>&1; then
   echo "Application user '${APP_USER}' does not exist." >&2
@@ -23,10 +24,7 @@ if [[ ! -d "${APP_DIR}/.git" ]]; then
   chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
 fi
 
-git config --global --add safe.directory "${APP_DIR}"
-sudo -u "${APP_USER}" git config --global --add safe.directory "${APP_DIR}"
-
-sudo -u "${APP_USER}" bash -lc "
+sudo -H -u "${APP_USER}" bash -lc "
   set -euo pipefail
   cd '${APP_DIR}'
   git fetch origin '${TARGET_BRANCH}'
@@ -52,7 +50,7 @@ if [[ "${INSTALL_SERVICE}" == "1" ]]; then
 fi
 
 if [[ "${RUN_SMOKE_TEST}" == "1" ]]; then
-  sudo -u "${APP_USER}" bash -lc "
+  sudo -H -u "${APP_USER}" bash -lc "
     set -euo pipefail
     cd '${APP_DIR}'
     bash ops/smoke_test_t4g.sh
