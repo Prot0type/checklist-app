@@ -169,6 +169,28 @@ jobs:
           cat >/tmp/checklist-app-deploy.sh <<'SCRIPT'
           #!/usr/bin/env bash
           set -euo pipefail
+          export HOME=/root
+
+          if ! command -v git >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y git
+          fi
+
+          mkdir -p /opt
+          if [ ! -d "/opt/checklist-app/.git" ]; then
+            git clone "https://github.com/Prot0type/checklist-app.git" "/opt/checklist-app"
+            chown -R "ubuntu:ubuntu" "/opt/checklist-app"
+          fi
+
+          sudo -H -u ubuntu bash -lc "
+            set -euo pipefail
+            cd '/opt/checklist-app'
+            git fetch origin ${QUOTED_TARGET_BRANCH}
+            git checkout ${QUOTED_TARGET_BRANCH}
+            git reset --hard origin/${QUOTED_TARGET_BRANCH}
+          "
+
           export TARGET_BRANCH=${QUOTED_TARGET_BRANCH}
           export CHECKLIST_AWS_REGION=${QUOTED_AWS_REGION}
           export CHECKLIST_TABLE_NAME=${QUOTED_CHECKLIST_TABLE}
