@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "checklist-app"
+version = "0.1.0"
+description = "Soccer betting checklist tracker with DynamoDB, FotMob, and Discord integrations."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "boto3>=1.35",
+    "requests>=2.32",
+    "selenium>=4.25",
+]
+
+[project.scripts]
+checklist-app = "checklist_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["checklist_app*", "checklist", "classes", "commons", "discord", "fotmob"]

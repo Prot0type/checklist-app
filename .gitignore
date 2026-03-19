@@ -6,9 +6,14 @@ venv/
 env/
 
 logs/
+tmp*/
 
 .env
 .env.*
+!.env.example
 
 .DS_Store
 Thumbs.db
+
+.ai-scratch
+.ai-scratch/

@@ -1,0 +1,17 @@
+[Unit]
+Description=Checklist App Monitor Worker
+After=network-online.target snapd.seeded.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/checklist-app
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/checklist-app/checklist-app.env
+ExecStart=/opt/checklist-app/.venv/bin/python -m checklist_app monitor --foreground
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
