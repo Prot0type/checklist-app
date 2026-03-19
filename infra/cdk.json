@@ -1,0 +1,17 @@
+{
+  "app": "python app.py",
+  "context": {
+    "checklist": {
+      "projectName": "checklist-app",
+      "environmentName": "prod",
+      "awsRegion": "us-west-2",
+      "githubRepository": "Prot0type/checklist-app",
+      "githubBranch": "main",
+      "instanceType": "t4g.small",
+      "instanceVolumeSizeGiB": 16,
+      "checklistTableName": "Checklist",
+      "matchDataTableName": "MatchData",
+      "ubuntuAmiSsmParameter": "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+    }
+  }
+}

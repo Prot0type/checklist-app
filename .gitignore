@@ -12,6 +12,9 @@ tmp*/
 .env.*
 !.env.example
 
+cdk.out/
+infra/.venv/
+
 .DS_Store
 Thumbs.db
 

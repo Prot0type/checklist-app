@@ -104,5 +104,13 @@ The operational assets for that server live in `ops/`:
 - `ops/install_app.sh`
 - `ops/rebuild_t4g.sh`
 - `ops/smoke_test_t4g.sh`
+- `ops/render_server_env.sh`
+- `ops/deploy_instance_update.sh`
 - `ops/checklist-app-monitor.service`
 - `ops/checklist-app.env.example`
+
+## Infra And CI/CD
+
+AWS infrastructure is now modeled in the Python CDK app under `infra/`, and GitHub Actions handles CI plus OIDC-based deploys from `main`.
+
+The overview and usage notes live in [docs/cdk-cicd.md](docs/cdk-cicd.md).

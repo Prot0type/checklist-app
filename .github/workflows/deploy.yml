@@ -1,0 +1,212 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: checklist-app-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ROLE_TO_ASSUME: arn:aws:iam::637423363389:role/Checklist-App-GitHub-OIDC-Role
+  TARGET_BRANCH: main
+  INSTANCE_PROJECT_TAG: checklist-app
+  INSTANCE_COMPONENT_TAG: worker
+  CHECKLIST_TABLE_NAME: Checklist
+  MATCH_DATA_TABLE_NAME: MatchData
+
+jobs:
+  deploy-infra:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install CDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r infra/requirements.txt
+          npm install --global aws-cdk
+
+      - name: Bootstrap CDK
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          cd infra
+          cdk bootstrap "aws://${ACCOUNT_ID}/${AWS_REGION}"
+
+      - name: Deploy infrastructure
+        run: |
+          cd infra
+          cdk deploy --all --require-approval never
+
+  deploy-app:
+    needs: deploy-infra
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+      DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Find worker instance
+        id: instance
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --filters \
+              Name=tag:Project,Values=${INSTANCE_PROJECT_TAG} \
+              Name=tag:Component,Values=${INSTANCE_COMPONENT_TAG} \
+              Name=instance-state-name,Values=pending,running,stopping,stopped \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)"
+
+          if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "None" ]; then
+            echo "No checklist worker instance was found." >&2
+            exit 1
+          fi
+
+          INSTANCE_STATE="$(aws ec2 describe-instances \
+            --instance-ids "${INSTANCE_ID}" \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)"
+
+          echo "instance_id=${INSTANCE_ID}" >> "${GITHUB_OUTPUT}"
+          echo "instance_state=${INSTANCE_STATE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Start worker when needed
+        id: power
+        run: |
+          set -euo pipefail
+          SHOULD_STOP=0
+
+          if [ "${{ steps.instance.outputs.instance_state }}" = "stopped" ]; then
+            aws ec2 start-instances --instance-ids "${{ steps.instance.outputs.instance_id }}" >/dev/null
+            aws ec2 wait instance-status-ok --instance-ids "${{ steps.instance.outputs.instance_id }}"
+            SHOULD_STOP=1
+          elif [ "${{ steps.instance.outputs.instance_state }}" = "stopping" ]; then
+            aws ec2 wait instance-stopped --instance-ids "${{ steps.instance.outputs.instance_id }}"
+            aws ec2 start-instances --instance-ids "${{ steps.instance.outputs.instance_id }}" >/dev/null
+            aws ec2 wait instance-status-ok --instance-ids "${{ steps.instance.outputs.instance_id }}"
+            SHOULD_STOP=1
+          fi
+
+          echo "should_stop=${SHOULD_STOP}" >> "${GITHUB_OUTPUT}"
+
+      - name: Wait for SSM
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+
+          for attempt in $(seq 1 60); do
+            PING_STATUS="$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || true)"
+
+            if [ "${PING_STATUS}" = "Online" ]; then
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "SSM did not come online for ${INSTANCE_ID}." >&2
+          exit 1
+
+      - name: Deploy application through SSM
+        run: |
+          set -euo pipefail
+
+          INSTANCE_ID="${{ steps.instance.outputs.instance_id }}"
+          ENABLE_MONITOR_SERVICE=0
+
+          if [ -n "${DISCORD_BOT_TOKEN}" ] && [ -n "${DISCORD_CHANNEL_ID}" ]; then
+            ENABLE_MONITOR_SERVICE=1
+          fi
+
+          printf -v QUOTED_TARGET_BRANCH '%q' "${TARGET_BRANCH}"
+          printf -v QUOTED_AWS_REGION '%q' "${AWS_REGION}"
+          printf -v QUOTED_CHECKLIST_TABLE '%q' "${CHECKLIST_TABLE_NAME}"
+          printf -v QUOTED_MATCH_TABLE '%q' "${MATCH_DATA_TABLE_NAME}"
+          printf -v QUOTED_DISCORD_BOT_TOKEN '%q' "${DISCORD_BOT_TOKEN}"
+          printf -v QUOTED_DISCORD_CHANNEL_ID '%q' "${DISCORD_CHANNEL_ID}"
+          printf -v QUOTED_ENABLE_MONITOR_SERVICE '%q' "${ENABLE_MONITOR_SERVICE}"
+
+          read -r -d '' REMOTE_SCRIPT <<EOF || true
+          set -euo pipefail
+          cloud-init status --wait || true
+          cat >/tmp/checklist-app-deploy.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export TARGET_BRANCH=${QUOTED_TARGET_BRANCH}
+          export CHECKLIST_AWS_REGION=${QUOTED_AWS_REGION}
+          export CHECKLIST_TABLE_NAME=${QUOTED_CHECKLIST_TABLE}
+          export MATCH_DATA_TABLE_NAME=${QUOTED_MATCH_TABLE}
+          export DISCORD_BOT_TOKEN=${QUOTED_DISCORD_BOT_TOKEN}
+          export DISCORD_CHANNEL_ID=${QUOTED_DISCORD_CHANNEL_ID}
+          export WRITE_ENV_FILE=1
+          export RUN_SMOKE_TEST=1
+          export ENABLE_MONITOR_SERVICE=${QUOTED_ENABLE_MONITOR_SERVICE}
+          export INSTALL_SERVICE=1
+          bash /opt/checklist-app/ops/deploy_instance_update.sh
+          SCRIPT
+          chmod +x /tmp/checklist-app-deploy.sh
+          bash /tmp/checklist-app-deploy.sh
+          EOF
+
+          jq -Rn --arg script "${REMOTE_SCRIPT}" '{"commands": [$script]}' > ssm-parameters.json
+
+          COMMAND_ID="$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy checklist-app from GitHub Actions" \
+            --parameters file://ssm-parameters.json \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          aws ssm wait command-executed \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${INSTANCE_ID}"
+
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${INSTANCE_ID}" \
+            --query 'StandardOutputContent' \
+            --output text
+
+      - name: Stop worker if it was originally off
+        if: always() && steps.power.outputs.should_stop == '1'
+        run: |
+          set -euo pipefail
+          aws ec2 stop-instances --instance-ids "${{ steps.instance.outputs.instance_id }}" >/dev/null
