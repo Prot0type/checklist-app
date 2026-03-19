@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -111,14 +112,14 @@ class FotMobClient:
 
     @staticmethod
     def _extract_status_and_score(soup) -> tuple[MatchStatus, str | None]:
-        status_wrapper = soup.find("div", class_="css-1cf82ng-MFHeaderStatusWrapper emg45p20")
+        status_wrapper = FotMobClient._find_first_with_class_fragment(soup, "div", "MFHeaderStatusWrapper")
         if status_wrapper is None:
             return MatchStatus.NOT_STARTED, None
 
-        status_text = status_wrapper.find("span", class_="css-xbwez1-MFStatusReason emg45p211")
-        score_text = status_wrapper.find("span", class_="css-ktw5ic-MFHeaderStatusScore emg45p23")
-        live_time = status_wrapper.find("div", class_="css-1dr9hlj-MFStatusLiveTime emg45p28")
-        halftime_text = status_wrapper.find("span", class_="css-12193e3-MFStatusLiveTimeText emg45p29")
+        status_text = FotMobClient._find_first_with_class_fragment(status_wrapper, "span", "MFStatusReason")
+        score_text = FotMobClient._find_first_with_class_fragment(status_wrapper, "span", "MFHeaderStatusScore")
+        live_time = FotMobClient._find_first_with_class_fragment(status_wrapper, "div", "MFStatusLiveTime")
+        halftime_text = FotMobClient._find_first_with_class_fragment(status_wrapper, "span", "MFStatusLiveTimeText")
 
         if halftime_text and halftime_text.text.strip().lower() == "half time":
             status = MatchStatus.HALF_TIME
@@ -141,10 +142,59 @@ class FotMobClient:
 
     @staticmethod
     def _extract_team_names(soup) -> tuple[str | None, str | None]:
-        team_elements = soup.find_all("span", class_="css-dpbuul-TeamNameItself-TeamNameOnTabletUp e2bgjnh1")
-        if len(team_elements) < 2:
-            return None, None
-        return team_elements[0].text.strip(), team_elements[1].text.strip()
+        names = FotMobClient._collect_unique_team_names(
+            soup,
+            [
+                "TeamNameItself-TeamNameOnTabletUp",
+                "TeamNameItself-TeamNameOnMobile",
+                "-TeamName",
+            ],
+        )
+        if len(names) >= 2:
+            return names[0], names[1]
+
+        title = soup.title.text.strip() if soup.title and soup.title.text else ""
+        title_match = re.match(r"^(?P<home>.+?)\s+vs\s+(?P<away>.+?)\s+-", title)
+        if title_match:
+            return title_match.group("home").strip(), title_match.group("away").strip()
+
+        return None, None
+
+    @staticmethod
+    def _find_first_with_class_fragment(node, tag_name: str, class_fragment: str):
+        return node.find(
+            tag_name,
+            class_=lambda classes: bool(classes)
+            and any(class_fragment in class_name for class_name in FotMobClient._normalize_classes(classes)),
+        )
+
+    @staticmethod
+    def _collect_unique_team_names(soup, class_fragments: list[str]) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+
+        for fragment in class_fragments:
+            matches = soup.find_all(
+                "span",
+                class_=lambda classes: bool(classes)
+                and any(fragment in class_name for class_name in FotMobClient._normalize_classes(classes)),
+            )
+            for match in matches:
+                candidate = match.get_text(" ", strip=True)
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                names.append(candidate)
+                if len(names) >= 2:
+                    return names
+
+        return names
+
+    @staticmethod
+    def _normalize_classes(classes) -> list[str]:
+        if isinstance(classes, str):
+            return classes.split()
+        return list(classes)
 
     def _cleanup_profile_dir(self) -> None:
         if self._profile_dir is None:
